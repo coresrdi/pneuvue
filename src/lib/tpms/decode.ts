@@ -3,6 +3,8 @@
  * Voir docs/ble-tpms.md pour le détail des formats et les sources.
  */
 
+import { hasTpmsService, isExcludedCompany, isKnownNonTpms } from "./known-devices";
+
 export interface DecodedTpms {
   /** Identifiants possibles pour apparier le capteur à une roue. */
   ids: string[];
@@ -13,13 +15,100 @@ export interface DecodedTpms {
   batVolt?: number;
   alarm: boolean;
   /** Nom court du format retenu, pour le journal / le débogage. */
-  format: "zeepin-16" | "vendor-1e20";
+  format: "zeepin-16" | "vendor-1e20" | "fbb0-short";
+  /** Pression en bar, doublon pratique de psi pour l'affichage. */
+  bar: number;
 }
 
 const KPA_TO_PSI = 0.145037737;
+const BAR_TO_PSI = 14.5037737;
+
+export function psiToBar(psi: number) {
+  return psi / BAR_TO_PSI;
+}
+
+export function barToPsi(bar: number) {
+  return bar * BAR_TO_PSI;
+}
 
 export function normalizeSensorId(id: string) {
   return id.trim().toUpperCase().replace(/[\s:_-]/g, "");
+}
+
+export function normalizeHexId(raw: string) {
+  return raw.trim().toUpperCase().replace(/[^0-9A-F]/g, "");
+}
+
+/** Inverse l'ordre des octets d'une chaîne hex (3A1F2C → 2C1F3A). */
+export function reverseHexBytes(hex: string) {
+  const h = normalizeHexId(hex);
+  if (h.length < 2 || h.length % 2) return h;
+  const parts = h.match(/.{2}/g);
+  return parts ? parts.reverse().join("") : h;
+}
+
+/** Les deux ordres d'octets d'un identifiant de 3 octets (ou des 3 derniers). */
+export function idByteOrders(hex: string): string[] {
+  const h = normalizeHexId(hex);
+  if (h.length < 6) return h ? [h] : [];
+  const tail = h.slice(-6);
+  return [...new Set([tail, reverseHexBytes(tail)])];
+}
+
+/**
+ * Identifiants 3 octets à chercher : suffixe/préfixe de MAC, suffixe du nom
+ * (ex. « AR G INT-3A1F2C »), dans les deux ordres d'octets.
+ */
+export function idCandidatesFrom(deviceId?: string, name?: string): string[] {
+  const out = new Set<string>();
+  const add = (raw?: string) => {
+    if (!raw) return;
+    const n = normalizeHexId(raw);
+    if (n.length >= 12) {
+      for (const part of [n.slice(-6), n.slice(0, 6)]) {
+        for (const v of idByteOrders(part)) out.add(v);
+      }
+    } else if (n.length >= 6) {
+      for (const v of idByteOrders(n.slice(-6))) out.add(v);
+    }
+  };
+  add(deviceId);
+  if (name) {
+    const chunks = name.toUpperCase().match(/[0-9A-F]{6,12}/g) ?? [];
+    for (const c of chunks) add(c);
+  }
+  return [...out];
+}
+
+export function haystackContainsId(haystack: string, query: string): boolean {
+  const hay = normalizeHexId(haystack);
+  const q = normalizeHexId(query);
+  if (!hay || q.length < 4) return false;
+  const variants = q.length >= 6 ? idByteOrders(q) : [q, reverseHexBytes(q.padStart(q.length + (q.length % 2), "0"))];
+  return variants.some((v) => v.length >= 4 && hay.includes(v));
+}
+
+export function rawContainsId(
+  fields: {
+    deviceId?: string;
+    name?: string;
+    aliases?: string[];
+    manufacturerData?: Record<string, string>;
+    serviceData?: Record<string, string>;
+  },
+  query: string,
+): boolean {
+  const q = normalizeHexId(query);
+  if (q.length < 4) return false;
+  const blobs = [
+    fields.deviceId,
+    fields.name,
+    ...(fields.aliases ?? []),
+    ...Object.keys(fields.manufacturerData ?? {}),
+    ...Object.values(fields.manufacturerData ?? {}),
+    ...Object.values(fields.serviceData ?? {}),
+  ];
+  return blobs.some((b) => b && haystackContainsId(String(b), q));
 }
 
 export function sensorAliases(label: string, deviceId?: string): string[] {
@@ -34,6 +123,7 @@ export function sensorAliases(label: string, deviceId?: string): string[] {
   const named = normalizeSensorId(label);
   const prefixed = named.match(/^(?:TPMS|SYS|SYTPMS|ZEEPIN|BR|TIRE)[_]?([A-Z0-9]{4,12})$/);
   if (prefixed) add(prefixed[1]);
+  for (const id of idCandidatesFrom(deviceId, label)) add(id);
   return [...keys];
 }
 
@@ -43,6 +133,9 @@ export function findLive<T>(readings: Record<string, T>, sensorId: string): T | 
   if (readings[id]) return readings[id];
   for (const [key, value] of Object.entries(readings)) {
     if (key.length >= 4 && id.length >= 4 && (key.endsWith(id) || id.endsWith(key))) {
+      return value;
+    }
+    if (id.length >= 6 && idByteOrders(id).some((v) => key.includes(v) || v.includes(key))) {
       return value;
     }
   }
@@ -64,80 +157,189 @@ function i32le(bytes: Uint8Array, offset: number) {
   return v | 0;
 }
 
-function plausible(psi: number, temp: number, bat: number) {
-  return psi >= 0 && psi <= 200 && temp >= -50 && temp <= 150 && bat >= 0 && bat <= 100;
+function u16be(bytes: Uint8Array, offset: number) {
+  return ((bytes[offset] << 8) | bytes[offset + 1]) & 0xffff;
+}
+
+/** Lecture typique d'un pneu de route / remorque, une fois l'identifiant reconnu. */
+export function isPlausibleIdMatched(bar: number, temp: number, bat?: number) {
+  if (!Number.isFinite(bar) || !Number.isFinite(temp)) return false;
+  if (bar < 1.2 || bar > 6) return false;
+  if (temp < -40 || temp > 80) return false;
+  if (bat != null && (bat <= 0 || bat > 100)) return false;
+  if (temp === 0 && (bat == null || bat === 0)) return false;
+  return true;
+}
+
+/** Plage large, réservée au format ZEEPIN à signature forte (crevaison comprise). */
+export function isPlausibleStrong(psi: number, temp: number, bat: number) {
+  if (!Number.isFinite(psi) || !Number.isFinite(temp) || !Number.isFinite(bat)) return false;
+  if (psi < 1 || psi > 150) return false;
+  if (temp < -40 || temp > 125) return false;
+  if (bat <= 0 || bat > 100) return false;
+  return true;
+}
+
+export function isConsistentWithPrevious(
+  prev: Pick<DecodedTpms, "psi" | "temp"> | null | undefined,
+  next: Pick<DecodedTpms, "psi" | "temp">,
+) {
+  if (!prev) return true;
+  if (Math.abs(next.psi - prev.psi) > 25) return false;
+  if (Math.abs(next.temp - prev.temp) > 40) return false;
+  return true;
+}
+
+function withBar(d: Omit<DecodedTpms, "bar">): DecodedTpms {
+  return { ...d, bar: Math.round(psiToBar(d.psi) * 100) / 100 };
 }
 
 function idsFromBody(body: Uint8Array): string[] {
-  // Octets 3–5 : adresse capteur (souvent les 3 derniers de la MAC).
   const shortAddr = [...body.slice(3, 6)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  // Octets 0–5 présentés comme une MAC par certains firmwares.
   const macish = [...body.slice(0, 6)].map((b) => b.toString(16).padStart(2, "0")).join("");
   return sensorAliases(shortAddr, macish);
+}
+
+function bodyHasEaca(body: Uint8Array) {
+  return body.length >= 6 && (body[0] & 0xf0) === 0x80 && body[1] === 0xea && body[2] === 0xca;
+}
+
+function bodyMatchesDevice(body: Uint8Array, deviceId?: string, name?: string) {
+  if (body.length < 6) return false;
+  const embedded = [...body.slice(3, 6)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const macish = [...body.slice(0, 6)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const hay = normalizeHexId(embedded + macish);
+  return idCandidatesFrom(deviceId, name).some((id) => hay.includes(id) || id.includes(embedded.toUpperCase()));
 }
 
 /**
  * @param payload Données fabricant, avec ou sans les 2 octets d'identifiant compagnie.
  * @param companyId Identifiant compagnie BLE, si le système l'a déjà extrait.
  */
-export function decodeTpmsAdvertisement(payload: Uint8Array, companyId?: number): DecodedTpms | null {
-  const zeepin = decodeZeepin(payload, companyId);
+export function decodeTpmsAdvertisement(
+  payload: Uint8Array,
+  companyId?: number,
+  ctx?: { deviceId?: string; name?: string; serviceUuids?: string[]; knownIds?: string[] },
+): DecodedTpms | null {
+  const zeepin = decodeZeepin(payload, companyId, ctx);
   if (zeepin) return zeepin;
   const alt = decodeVendor1e20(payload, companyId);
   if (alt) return alt;
+  if (ctx && hasTpmsService(ctx.serviceUuids)) {
+    const short = decodeFbb0Short(payload);
+    if (short) return short;
+  }
+  const matched = decodeIfIdMatches(payload, companyId, ctx);
+  if (matched) return matched;
   return null;
 }
 
-function asBody(payload: Uint8Array, companyId?: number): { body: Uint8Array; company?: number } | null {
-  if (payload.length >= 18 && ((payload[0] === 0x00 && payload[1] === 0x01) || (payload[0] === 0x01 && payload[1] === 0x00))) {
-    return { body: payload.slice(2, 18), company: payload[0] === 0x00 ? 0x0001 : 0x0100 };
+function asStrictZeepinBody(payload: Uint8Array, companyId?: number): { body: Uint8Array; company: number } | null {
+  if (payload.length === 18) {
+    const prefix = (payload[0] << 8) | payload[1];
+    if (prefix === 0x0001 || prefix === 0x0100) return { body: payload.slice(2, 18), company: prefix };
+    return null;
   }
-  if (payload.length >= 16 && payload.length < 18) {
-    return { body: payload.slice(0, 16), company: companyId };
-  }
-  if (payload.length >= 18) {
-    return { body: payload.slice(0, 16), company: companyId };
+  if (payload.length === 16 && (companyId === 0x0001 || companyId === 0x0100)) {
+    return { body: payload, company: companyId };
   }
   return null;
 }
 
-function decodeZeepin(payload: Uint8Array, companyId?: number): DecodedTpms | null {
-  const parsed = asBody(payload, companyId);
-  if (!parsed) return null;
-  const { body, company } = parsed;
-  if (company !== undefined && company !== 0x0001 && company !== 0x0100) {
-    // On tente quand même : certains stacks inversent l'identifiant.
-  }
+function readZeepinBody(body: Uint8Array): Omit<DecodedTpms, "bar"> | null {
+  if (body.length < 16) return null;
   const kpa = u32le(body, 6) / 1000;
   const psi = Math.round(kpa * KPA_TO_PSI * 10) / 10;
   const temp = Math.round((i32le(body, 10) / 100) * 10) / 10;
   const bat = body[14];
   const alarm = body[15] !== 0;
-  if (!plausible(psi, temp, bat)) return null;
   return { ids: idsFromBody(body), psi, temp, bat, alarm, format: "zeepin-16" };
+}
+
+function decodeZeepin(
+  payload: Uint8Array,
+  companyId?: number,
+  ctx?: { deviceId?: string; name?: string },
+): DecodedTpms | null {
+  const parsed = asStrictZeepinBody(payload, companyId);
+  if (!parsed) return null;
+  const { body } = parsed;
+  if (!bodyHasEaca(body) && !bodyMatchesDevice(body, ctx?.deviceId, ctx?.name)) return null;
+  const reading = readZeepinBody(body);
+  if (!reading || !isPlausibleStrong(reading.psi, reading.temp, reading.bat)) return null;
+  return withBar(reading);
 }
 
 function decodeVendor1e20(payload: Uint8Array, companyId?: number): DecodedTpms | null {
   let data = payload;
-  if (payload.length >= 7 && payload[0] === 0x20 && payload[1] === 0x1e) {
+  let known = companyId === 0x1e20;
+  if (payload.length === 7 && payload[0] === 0x20 && payload[1] === 0x1e) {
     data = payload.slice(2);
-  } else if (payload.length >= 7 && payload[0] === 0x1e && payload[1] === 0x20) {
+    known = true;
+  } else if (payload.length === 7 && payload[0] === 0x1e && payload[1] === 0x20) {
     data = payload.slice(2);
+    known = true;
   }
-  if (companyId !== undefined && companyId !== 0x1e20 && data === payload && data.length !== 5) {
-    return null;
-  }
-  if (data.length < 5) return null;
-  if (companyId !== undefined && companyId !== 0x1e20 && data.length !== 5) return null;
+  if (!known || data.length !== 5) return null;
   const temp = data[0] > 127 ? data[0] - 256 : data[0];
   const bar = ((data[1] << 8) | data[2]) * 0.005;
-  const psi = Math.round(bar * 14.5037737 * 10) / 10;
+  const psi = Math.round(bar * BAR_TO_PSI * 10) / 10;
   let bat = 100;
-  if (data.length >= 5 && data[4] <= 100) bat = data[4];
-  else if (data.length >= 4 && data[3] <= 100) bat = data[3];
-  if (!plausible(psi, temp, bat)) return null;
-  // Sans identifiant capteur dans ce format court : l'appariement se fera par nom / deviceId.
-  return { ids: [], psi, temp, bat, alarm: false, format: "vendor-1e20" };
+  if (data[4] <= 100 && data[4] > 0) bat = data[4];
+  else if (data[3] <= 100 && data[3] > 0) bat = data[3];
+  if (!isPlausibleStrong(psi, temp, bat)) return null;
+  return withBar({ ids: [], psi, temp, bat, alarm: false, format: "vendor-1e20" });
+}
+
+/** Trame courte typique des capteurs FBB0, uniquement si l'UUID de service est présent. */
+function decodeFbb0Short(payload: Uint8Array): DecodedTpms | null {
+  if (payload.length !== 5) return null;
+  const temp = payload[0] > 127 ? payload[0] - 256 : payload[0];
+  const kpa = u16be(payload, 1) * 0.1;
+  const psi = Math.round(kpa * KPA_TO_PSI * 10) / 10;
+  const bat = payload[3];
+  if (!isPlausibleStrong(psi, temp, bat)) return null;
+  return withBar({ ids: [], psi, temp, bat, alarm: payload[4] !== 0, format: "fbb0-short" });
+}
+
+function possibleBodies(payload: Uint8Array): Uint8Array[] {
+  const out: Uint8Array[] = [];
+  if (payload.length === 16) out.push(payload);
+  if (payload.length >= 18) out.push(payload.slice(2, 18));
+  if (payload.length > 16 && payload.length !== 18) out.push(payload.slice(0, 16));
+  return out;
+}
+
+/**
+ * Chemin iTPMS : l'identifiant 3 octets (MAC ou nom, les deux ordres) apparaît
+ * dans la charge, et la pression (environ 1,2–6 bar) et la température sont plausibles.
+ */
+function decodeIfIdMatches(
+  payload: Uint8Array,
+  _companyId: number | undefined,
+  ctx?: { deviceId?: string; name?: string; knownIds?: string[] },
+): DecodedTpms | null {
+  const ids = [
+    ...idCandidatesFrom(ctx?.deviceId, ctx?.name),
+    ...(ctx?.knownIds ?? []).flatMap((id) => idByteOrders(id)),
+  ];
+  if (!ids.length) return null;
+  const hex = [...payload].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const inPayload = ids.some((id) => haystackContainsId(hex, id));
+  const inMacOrName = ids.length > 0;
+  if (!inPayload && !inMacOrName) return null;
+  // Il faut que l'ID soit réellement dans la charge, ou que le corps ZEEPIN
+  // embarque les 3 octets de la MAC / du nom.
+  for (const body of possibleBodies(payload)) {
+    const reading = readZeepinBody(body);
+    if (!reading) continue;
+    const bar = psiToBar(reading.psi);
+    const embedded = bodyMatchesDevice(body, ctx?.deviceId, ctx?.name) || bodyHasEaca(body);
+    if (!inPayload && !embedded) continue;
+    if (!isPlausibleIdMatched(bar, reading.temp, reading.bat)) continue;
+    return withBar(reading);
+  }
+  return null;
 }
 
 export function dataViewToBytes(view: DataView) {
@@ -151,7 +353,6 @@ export function hexToBytes(hex: string) {
   return out;
 }
 
-
 export function bytesToHex(bytes: Uint8Array) {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -161,18 +362,27 @@ export interface AdvertisementFields {
   serviceData: Record<string, string>;
   serviceUuids?: string[];
   name?: string;
+  deviceId?: string;
 }
 
 /**
  * Tente tous les formats connus à partir des données d'une annonce (fabricant + services).
+ * Les compagnies / UUID exclus (Apple, Govee, etc.) ne sont jamais décodés.
  */
-export function decodeAdvertisement(ad: AdvertisementFields): DecodedTpms | null {
+export function decodeAdvertisement(ad: AdvertisementFields, opts?: { knownIds?: string[] }): DecodedTpms | null {
+  if (isKnownNonTpms(ad)) return null;
+  const ctx = { deviceId: ad.deviceId, name: ad.name, serviceUuids: ad.serviceUuids, knownIds: opts?.knownIds };
   for (const [cid, hex] of Object.entries(ad.manufacturerData)) {
+    if (isExcludedCompany(cid)) continue;
     const company = Number.parseInt(cid, 16);
-    const decoded = decodeTpmsAdvertisement(hexToBytes(hex), Number.isFinite(company) ? company : undefined);
+    const decoded = decodeTpmsAdvertisement(hexToBytes(hex), Number.isFinite(company) ? company : undefined, ctx);
     if (decoded) return decoded;
   }
-  // Les UUID FBB0 / 27A5 identifient un capteur, mais le payload de service
-  // n'est pas assez documenté pour un décodage fiable : on ne devine pas la pression.
+  if (hasTpmsService(ad.serviceUuids)) {
+    for (const hex of Object.values(ad.serviceData)) {
+      const decoded = decodeFbb0Short(hexToBytes(hex)) ?? decodeTpmsAdvertisement(hexToBytes(hex), undefined, ctx);
+      if (decoded) return decoded;
+    }
+  }
   return null;
 }

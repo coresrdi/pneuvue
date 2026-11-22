@@ -58,7 +58,7 @@ export function formatDbm(rssi: number): string {
   return `${Math.round(rssi)} dBm`;
 }
 
-const KLASS_RANK: Record<SeenDevice["klass"], number> = { probable: 0, possible: 1, other: 2 };
+const KLASS_RANK: Record<SeenDevice["klass"], number> = { probable: 0, possible: 1, other: 2, known: 3 };
 
 export function sortDevices(devices: SeenDevice[], mode: SortMode): SeenDevice[] {
   const list = [...devices];

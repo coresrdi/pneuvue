@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { findLive, normalizeSensorId } from "./decode";
 import { mergeSeen, pruneSeen, type SeenDevice } from "./devices";
+import { upsertKnownSensorId, removeKnownSensorId, withKnownSensorId, type KnownSensorId } from "./known-ids";
 import { withHidden, withoutHidden } from "./exclusion";
 import { applyNickname } from "./nicknames";
 import type { PressureUnit } from "./format";
@@ -33,6 +34,7 @@ interface TpmsState {
   seenDevices: Record<string, SeenDevice>;
   hiddenSensors: string[];
   nicknames: Record<string, string>;
+  knownSensorIds: KnownSensorId[];
   setSeason: (season: Season) => void;
   setActive: (id: string) => void;
   assign: (wheel: WheelId, sensorId: string | null) => void;
@@ -55,6 +57,8 @@ interface TpmsState {
   restoreAllHidden: () => void;
   hideSensors: (keys: string[]) => void;
   setNicknameFor: (ref: { id?: string; deviceId?: string; aliases?: string[] }, value: string) => void;
+  addKnownSensorId: (id: string, nickname: string) => void;
+  removeKnownSensorId: (id: string) => void;
 }
 
 const DEFAULT_ID = "jeep-gc";
@@ -117,6 +121,7 @@ export const useTpms = create<TpmsState>()(
       seenDevices: {},
       hiddenSensors: [],
       nicknames: {},
+      knownSensorIds: [],
       setSeason: (season) => set({ season }),
       setActive: (id) => set({ activeId: id, leakWheel: null }),
       assign: (wheel, sensorId) => {
@@ -228,10 +233,16 @@ export const useTpms = create<TpmsState>()(
       ingestAdvertisement: (ad) => {
         set((s) => {
           const prev = Object.values(s.seenDevices).find((d) => d.deviceId === ad.deviceId || d.id === ad.deviceId);
-          const next = mergeSeen(prev, ad);
+          const knownIds = s.knownSensorIds.map((k) => k.id);
+          let next = mergeSeen(prev, ad, { knownIds });
+          const applied = withKnownSensorId(next, s.knownSensorIds, s.nicknames);
+          next = { ...next, klass: applied.klass, reason: applied.reason };
           const seenDevices = { ...s.seenDevices };
           if (prev && prev.id !== next.id) delete seenDevices[prev.id];
-          return { seenDevices: pruneSeen({ ...seenDevices, [next.id]: next }) };
+          return {
+            seenDevices: pruneSeen({ ...seenDevices, [next.id]: next }),
+            nicknames: applied.nicknames,
+          };
         });
       },
       clearSeenDevices: () => set({ seenDevices: {} }),
@@ -241,6 +252,8 @@ export const useTpms = create<TpmsState>()(
       hideSensors: (keys) =>
         set((s) => ({ hiddenSensors: keys.reduce((acc, k) => withHidden(acc, k), s.hiddenSensors) })),
       setNicknameFor: (ref, value) => set((s) => ({ nicknames: applyNickname(s.nicknames, ref, value) })),
+      addKnownSensorId: (id, nickname) => set((s) => ({ knownSensorIds: upsertKnownSensorId(s.knownSensorIds, id, nickname) })),
+      removeKnownSensorId: (id) => set((s) => ({ knownSensorIds: removeKnownSensorId(s.knownSensorIds, id) })),
     }),
     {
       name: "pneuvue",
@@ -258,6 +271,7 @@ export const useTpms = create<TpmsState>()(
         seenDevices: s.seenDevices,
         hiddenSensors: s.hiddenSensors,
         nicknames: s.nicknames,
+        knownSensorIds: s.knownSensorIds,
       }),
     },
   ),

@@ -132,7 +132,7 @@ test.describe("PneuVue — écoute et identification", () => {
     await expect(page.getByText("TPMS_8A78")).toBeVisible();
     await expect(page.getByText(/psi|kPa/).first()).toBeVisible();
     await expect(page.getByText("Govee_H705D_0669")).toHaveCount(0);
-    await page.getByRole("button", { name: /Afficher tous les appareils/ }).click();
+    await page.getByRole("button", { name: /Téléphones, montres et objets connus/ }).click();
     await expect(page.getByText("Govee_H705D_0669")).toBeVisible();
     await page.screenshot({ path: shotName(page, "ecoute"), fullPage: true });
   });
@@ -151,17 +151,18 @@ test.describe("PneuVue — écoute et identification", () => {
     await ingest(page, { deviceId: "22:22:22:22:22:22", name: "Inconnu_AA", rssi: -64 });
 
     await page.getByRole("button", { name: "Proximité" }).click();
-    const items = page.getByRole("listitem");
-    await expect(items.nth(0)).toContainText("Govee_H705D_0669");
-    await expect(items.nth(1)).toContainText("Inconnu_AA");
-    await expect(items.nth(2)).toContainText("TPMS_8A78");
-    await expect(page.getByText("Très proche").first()).toBeVisible();
+    const rows = page.getByRole("listitem").filter({ has: page.getByRole("button", { name: "Pas un capteur" }) });
+    await expect(rows.nth(0)).toContainText("Inconnu_AA");
+    await expect(rows.nth(1)).toContainText("TPMS_8A78");
     await expect(page.getByText("Proche").first()).toBeVisible();
     await expect(page.getByText("Loin").first()).toBeVisible();
+    await page.getByRole("button", { name: /Téléphones, montres et objets connus/ }).click();
+    await expect(page.getByText("Govee_H705D_0669")).toBeVisible();
+    await expect(page.getByText("Très proche").first()).toBeVisible();
     await expect(page.getByText("-46 dBm")).toBeVisible();
     await page.screenshot({ path: shotName(page, "ecoute-proximite"), fullPage: true });
 
-    await items.nth(0).getByRole("button", { name: "Pas un capteur" }).click();
+    await page.getByRole("listitem").filter({ hasText: "Govee_H705D_0669" }).getByRole("button", { name: "Pas un capteur" }).click();
     await expect(page.getByText("Govee_H705D_0669")).toHaveCount(0);
     await expect(page.getByRole("button", { name: /Appareils cachés \(1\)/ })).toBeVisible();
     await page.screenshot({ path: shotName(page, "ecoute-caches"), fullPage: true });
@@ -174,14 +175,41 @@ test.describe("PneuVue — écoute et identification", () => {
     const tpms = page.getByRole("listitem").filter({ hasText: "TPMS_8A78" });
     await tpms.getByRole("button", { name: "Assigner à une roue" }).click();
     await tpms.getByRole("button", { name: "AV G", exact: true }).click();
-    await expect(page.getByRole("listitem").filter({ hasText: "Capteur roue AV G" })).toBeVisible();
-    await expect(page.getByText("aa:bb:cc:10:8a:78")).toBeVisible();
+    await expect(page.getByRole("listitem").filter({ hasText: "aa:bb:cc:10:8a:78" })).toContainText("Capteur roue AV G");
 
-    await page.getByRole("listitem").filter({ hasText: "Capteur roue AV G" }).getByRole("button", { name: "Renommer" }).click();
-    await page.getByLabel("Surnom").fill("Capteur avant");
-    await page.getByRole("button", { name: "Enregistrer" }).click();
-    await expect(page.getByRole("listitem").filter({ hasText: "Capteur avant" })).toBeVisible();
+    await page.getByRole("listitem").filter({ hasText: "aa:bb:cc:10:8a:78" }).getByRole("button", { name: "Renommer" }).click();
+    await page.locator("#pneuvue-surnom").fill("Capteur avant");
+    await page.getByRole("button", { name: "Enregistrer", exact: true }).click();
+    await expect(page.getByRole("listitem").filter({ hasText: "aa:bb:cc:10:8a:78" })).toContainText("Capteur avant");
     await page.screenshot({ path: shotName(page, "ecoute-surnom"), fullPage: true });
+  });
+
+  test("écoute : identifiant enregistré, recherche et pression en bar", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: /Assigner les capteurs/ }).click();
+    await page.getByRole("button", { name: "Écouter les capteurs" }).click();
+    await page.getByLabel("Identifiant", { exact: true }).fill("3A1F2C");
+    await page.getByLabel("Surnom", { exact: true }).fill("Capteur roue AR G INT");
+    await page.getByRole("button", { name: "Enregistrer l'identifiant" }).click();
+    await ingest(page, {
+      deviceId: "aa:bb:cc:3a:1f:2c",
+      name: "",
+      rssi: -60,
+      manufacturerData: { "00ff": "00aa3a1f2cbb" },
+    });
+    await expect(page.getByRole("listitem").filter({ hasText: "aa:bb:cc:3a:1f:2c" })).toContainText("Capteur roue AR G INT");
+    await expect(page.getByText("Probable").first()).toBeVisible();
+    await page.getByLabel("Chercher un identifiant").fill("2C1F3A");
+    await expect(page.getByRole("listitem").filter({ hasText: "aa:bb:cc:3a:1f:2c" })).toContainText("Capteur roue AR G INT");
+    await ingest(page, {
+      deviceId: "66:35:6C:81:AB:F8",
+      name: "",
+      rssi: -55,
+      manufacturerData: { "004c": "10063e1e3b9561a00100000000000000000000000080000000" },
+    });
+    await expect(page.getByText("12,3 psi")).toHaveCount(0);
+    await expect(page.getByText("15,5 psi")).toHaveCount(0);
+    await page.screenshot({ path: shotName(page, "ecoute-identifiant"), fullPage: true });
   });
 
   test("identifier : rapprocher le téléphone propose le capteur le plus proche", async ({ page }) => {

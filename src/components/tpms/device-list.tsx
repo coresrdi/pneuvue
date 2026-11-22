@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { exclusionKey, hideFarDevices, hideNonProbable, isExcluded, visibleDevices } from "@/lib/tpms/exclusion";
 import { preferredSensorId, type SeenDevice } from "@/lib/tpms/devices";
+import { rawContainsId } from "@/lib/tpms/decode";
 import { formatReadingLine } from "@/lib/tpms/format";
 import { activeVehicle, useTpms } from "@/lib/tpms/store";
 import { displayName, lookupNickname, suggestedNickname } from "@/lib/tpms/nicknames";
@@ -25,13 +26,21 @@ export function DeviceList(props: { wheels: WheelId[] }) {
   const [showHidden, setShowHidden] = useState(false);
   const [assignFor, setAssignFor] = useState<string | null>(null);
   const [renameFor, setRenameFor] = useState<string | null>(null);
+  const [idQuery, setIdQuery] = useState("");
+  const [showKnown, setShowKnown] = useState(false);
+  const [newId, setNewId] = useState("");
+  const [newNick, setNewNick] = useState("");
 
   const all = Object.values(state.seenDevices);
   const hiddenKeys = state.hiddenSensors;
   const shown = visibleDevices(all, hiddenKeys);
   const sensors = shown.filter((d) => d.klass === "probable" || d.klass === "possible");
   const others = shown.filter((d) => d.klass === "other");
-  const pool = mode === "probable" && !showAll ? sensors : shown;
+  const known = shown.filter((d) => d.klass === "known");
+  const query = idQuery.trim();
+  const searchHits = query.length >= 4 ? all.filter((d) => rawContainsId(d, query)) : [];
+  const searching = query.length >= 4;
+  const pool = searching ? searchHits : mode === "probable" && !showAll ? sensors : shown.filter((d) => d.klass !== "known");
   const ordered = useDisplayedOrder(pool, mode);
   const now = Date.now();
   const vehicle = activeVehicle(state);
@@ -66,11 +75,93 @@ export function DeviceList(props: { wheels: WheelId[] }) {
         ))}
       </div>
 
-      {ordered.length === 0 && (
-        <p className="mt-3 text-base leading-snug text-muted">
-          Aucun appareil visible pour l'instant. Lance une écoute près du véhicule, ou identifie une roue
-          en rapprochant le téléphone.
+      <div className="mt-3">
+        <label className="text-sm font-semibold text-muted" htmlFor="pneuvue-cherche-id">
+          Chercher un identifiant (ex. 3A1F2C)
+        </label>
+        <input
+          id="pneuvue-cherche-id"
+          value={idQuery}
+          onChange={(event) => setIdQuery(event.target.value)}
+          placeholder="ex. 3A1F2C"
+          className="mt-1 min-h-12 w-full min-w-0 rounded-2xl bg-bg px-3 text-lg font-semibold ring-1 ring-line outline-none"
+        />
+        {searching && (
+          <p className="mt-2 text-base leading-snug text-muted">
+            {searchHits.length === 0
+              ? "Aucun appareil du journal ne contient cet identifiant (ni dans l'adresse, ni dans les données brutes)."
+              : `${searchHits.length} appareil(s) correspondent, y compris dans les groupes habituellement masqués.`}
+          </p>
+        )}
+      </div>
+
+      <form
+        className="mt-3 rounded-2xl bg-bg px-3 py-3 ring-1 ring-line"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!newId.trim()) return;
+          state.addKnownSensorId(newId, newNick);
+          setNewId("");
+          setNewNick("");
+        }}
+      >
+        <p className="text-base font-semibold leading-snug">Enregistrer un identifiant (iTPMS)</p>
+        <p className="mt-1 text-sm leading-snug text-muted">
+          Colle l'identifiant vu dans iTPMS (3 octets, ex. un code à 6 chiffres hex). Le capteur sera
+          nommé automatiquement dès qu'il est entendu, et classé comme probable.
         </p>
+        <label className="mt-2 block text-sm font-semibold text-muted" htmlFor="pneuvue-id-connu">
+          Identifiant
+        </label>
+        <input
+          id="pneuvue-id-connu"
+          value={newId}
+          onChange={(event) => setNewId(event.target.value)}
+          placeholder="ex. identifiant à 6 caractères"
+          className="mt-1 min-h-12 w-full min-w-0 rounded-2xl bg-card px-3 text-lg font-semibold ring-1 ring-line outline-none"
+        />
+        <label className="mt-2 block text-sm font-semibold text-muted" htmlFor="pneuvue-surnom-id">
+          Surnom
+        </label>
+        <input
+          id="pneuvue-surnom-id"
+          value={newNick}
+          onChange={(event) => setNewNick(event.target.value)}
+          placeholder="ex. Capteur roue AR G INT"
+          className="mt-1 min-h-12 w-full min-w-0 rounded-2xl bg-card px-3 text-lg font-semibold ring-1 ring-line outline-none"
+        />
+        <button type="submit" className="mt-2 min-h-12 w-full rounded-2xl bg-primary text-base font-semibold text-primary-fg">
+          Enregistrer l'identifiant
+        </button>
+        {state.knownSensorIds.length > 0 && (
+          <ul className="mt-3 flex flex-col gap-2">
+            {state.knownSensorIds.map((k) => (
+              <li key={k.id} className="flex flex-col gap-1 min-[420px]:flex-row min-[420px]:items-center min-[420px]:justify-between">
+                <p className="min-w-0 text-base leading-snug">
+                  <span className="font-semibold">{k.nickname || "Sans surnom"}</span>
+                  <span className="block text-sm text-muted">{k.id}</span>
+                </p>
+                <button type="button" onClick={() => state.removeKnownSensorId(k.id)} className="min-h-12 shrink-0 rounded-2xl px-3 text-base font-semibold text-alert">
+                  Retirer
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </form>
+
+      {sensors.length === 0 && !searching && (
+        <p className="mt-3 text-base leading-snug text-muted">
+          Aucun capteur n'a été reconnu pour l'instant. Fais rouler le véhicule quelques minutes ou change
+          la pression pour réveiller les capteurs. Ouvre iTPMS jusqu'à ce que les pressions s'affichent,
+          ferme-le, puis lance l'écoute. Certains capteurs sont en 433 MHz (radio) et ne sont pas lisibles
+          par un téléphone. Si tu as l'identifiant vu dans iTPMS, enregistre-le ci-dessus ou cherche-le
+          dans le journal brut.
+        </p>
+      )}
+
+      {ordered.length === 0 && searching && (
+        <p className="mt-3 text-base leading-snug text-muted">Aucun résultat pour cette recherche.</p>
       )}
 
       <ul className="mt-3 flex flex-col gap-2">
@@ -112,10 +203,36 @@ export function DeviceList(props: { wheels: WheelId[] }) {
         ))}
       </ul>
 
-      {mode === "probable" && others.length > 0 && (
+      {mode === "probable" && others.length > 0 && !searching && (
         <button type="button" onClick={() => setShowAll(!showAll)} className="mt-3 min-h-12 w-full text-base font-semibold text-primary">
           {showAll ? "Masquer les autres appareils" : `Afficher tous les appareils (${others.length})`}
         </button>
+      )}
+      {known.length > 0 && !searching && (
+        <button type="button" onClick={() => setShowKnown(!showKnown)} className="mt-3 min-h-12 w-full text-base font-semibold text-primary">
+          {showKnown ? "Masquer les téléphones, montres et objets connus" : `Téléphones, montres et objets connus (${known.length})`}
+        </button>
+      )}
+      {showKnown && !searching && (
+        <ul className="mt-2 flex flex-col gap-2">
+          {known.map((d) => (
+            <DeviceRow
+              key={`known-${d.id}`}
+              device={d}
+              unit={state.pressureUnit}
+              nicknames={state.nicknames}
+              agoMs={now - d.lastSeen}
+              assigning={false}
+              renaming={false}
+              wheels={props.wheels}
+              onAssignToggle={() => {}}
+              onAssign={() => {}}
+              onHide={() => state.hideSensor(exclusionKey(d))}
+              onRenameToggle={() => {}}
+              onSaveName={() => {}}
+            />
+          ))}
+        </ul>
       )}
 
       <div className="mt-3 flex flex-col gap-2">
@@ -214,10 +331,13 @@ function DeviceRow(props: {
       </div>
       <ProximityMeter rssi={rssi} level={level} bars={bars} />
       <p className="mt-1 text-base font-semibold leading-snug">
-        {line || "Données non décodées — le journal brut reste disponible."}
+        {line || "Données non reconnues — le journal brut reste disponible."}
       </p>
-      {d.variable && (
-        <p className="mt-1 text-sm font-semibold text-ok">Annonce variable — typique si le véhicule roule.</p>
+      {d.variable && d.klass !== "probable" && (
+        <p className="mt-1 text-sm leading-snug text-muted">
+          Données changeantes : le contenu de l'annonce n'est pas fixe (souvent un téléphone ou un objet
+          connecté). Ce n'est pas un signe qu'il s'agit d'un capteur de pneu.
+        </p>
       )}
 
       {props.renaming ? (

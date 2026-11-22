@@ -1,3 +1,5 @@
+import { psiToBar } from "./decode";
+
 export type PressureUnit = "psi" | "kpa";
 
 const KPA_TO_PSI = 0.145037737;
@@ -11,8 +13,10 @@ export function frNum(n: number, digits = 1) {
 }
 
 export function formatPressure(psi: number, unit: PressureUnit) {
-  if (unit === "kpa") return `${psiToKpa(psi)} kPa`;
-  return `${frNum(psi, 1)} psi`;
+  const bar = `${frNum(psiToBar(psi), 1)} bar`;
+  const psiStr = `${frNum(psi, 1)} psi`;
+  if (unit === "kpa") return `${bar} · ${psiToKpa(psi)} kPa · ${psiStr}`;
+  return `${bar} · ${psiStr}`;
 }
 
 export function formatBattery(reading: { bat?: number; batVolt?: number }) {

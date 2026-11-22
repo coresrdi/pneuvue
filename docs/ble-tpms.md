@@ -61,9 +61,14 @@ Les noms `TPMS`, `ZEEPIN`, `SYTPMS`, `BR_…` sont également considérés comme
 
 Pendant l'écoute (15 à 30 min) et l'identification, un seul module de scan passif (`requestLEScan`, sans sélecteur natif) enregistre chaque appareil : adresse, nom, RSSI, nombre d'annonces, dernière vue, données brutes, valeurs décodées.
 
-- **Probable** : format connu, UUID FBB0/27A5, ou nom typique.
-- **Possible** : l'annonce change périodiquement (souvent si le véhicule roule) et n'est pas une marque connue (Govee, etc.).
-- **Autres** : masqués par défaut derrière « Afficher tous les appareils ».
+- **Probable** : format TPMS à signature forte (compagnie 0x0001/0x0100, longueur exacte), ou identifiant de 3 octets enregistré par l'utilisateur et retrouvé dans la MAC ou la charge (les deux ordres d'octets).
+- **Possible** : nom (TPMS, BR…) ou UUID FBB0/27A5, mais pression non reconnue. On affiche « données non reconnues ».
+- **Téléphones, montres et objets connus** (Apple 0x004C, Govee, Samsung, etc.) : jamais Probable ni Possible, masqués par défaut.
+- **Autres** : masqués par défaut derrière « Afficher tous les appareils ». Une annonce dont le contenu change (« Données changeantes ») n'est plus un indice de capteur.
+
+La pression s'affiche en **bar et en psi**, seulement si le décodage est fiable. On peut chercher un identifiant (vu dans iTPMS) dans le journal brut, et l'enregistrer avec un surnom pour qu'il soit reconnu automatiquement.
+
+Si aucun capteur n'apparaît : faire rouler le véhicule ou changer la pression, ouvrir iTPMS jusqu'à l'affichage des pressions, le fermer, puis relancer l'écoute. Certains capteurs 433 MHz ne sont pas lisibles par un téléphone.
 
 On peut trier la liste par **Proximité** (RSSI lissé, médiane des dernières annonces), par capteurs probables, ou par appareils récents. L'ordre par proximité se met à jour toutes les 1,5 s, ou seulement si l'écart de signal est significatif. Chaque ligne affiche des barres, « Très proche / Proche / Loin », et la valeur en dBm.
 

@@ -43,8 +43,8 @@ describe("mergeSeen", () => {
     expect(second.rssi).toBe(-55);
   });
 
-  it("classe un Govee comme autre appareil", () => {
+  it("classe un Govee comme objet connu", () => {
     const d = mergeSeen(undefined, ad({ deviceId: "11:22:33:44:55:66", name: "Govee_H705D_0669" }));
-    expect(d.klass).toBe("other");
+    expect(d.klass).toBe("known");
   });
 });

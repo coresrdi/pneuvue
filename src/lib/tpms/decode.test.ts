@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeTpmsAdvertisement, findLive, hexToBytes, normalizeSensorId, sensorAliases } from "./decode";
+import { decodeAdvertisement, decodeTpmsAdvertisement, findLive, hexToBytes, normalizeSensorId, sensorAliases } from "./decode";
 
 describe("decodeTpmsAdvertisement", () => {
   it("décode l'exemple ra6070/BLE-TPMS (ZEEPIN, 18 octets avec 0001)", () => {
@@ -51,5 +51,28 @@ describe("identifiants", () => {
     const readings = { TPMSC4A1: { psi: 39 } };
     expect(findLive(readings, "C4A1")?.psi).toBe(39);
     expect(findLive(readings, "C4A2")).toBeUndefined();
+  });
+});
+
+
+describe("rejets des fausses lectures", () => {
+  it("ne décode pas une annonce Apple Nearby Info 0x004C", () => {
+    const decoded = decodeAdvertisement({
+      deviceId: "66:35:6C:81:AB:F8",
+      name: "",
+      manufacturerData: { "004c": "10063e1e3b9561a00100000000000000000000000080000000" },
+      serviceData: {},
+    });
+    expect(decoded).toBeNull();
+  });
+
+  it("ne décode pas une annonce Govee 0x8843", () => {
+    const decoded = decodeAdvertisement({
+      deviceId: "11:22:33:44:55:66",
+      name: "Govee_H705D_0669",
+      manufacturerData: { "8843": "ec00020101" },
+      serviceData: {},
+    });
+    expect(decoded).toBeNull();
   });
 });

@@ -1,10 +1,12 @@
 import { looksLikeTpmsName, classifyDevice, deviceKey, type DeviceClass } from "./classify";
 import {
   decodeAdvertisement,
+  isConsistentWithPrevious,
   normalizeSensorId,
   sensorAliases,
   type DecodedTpms,
 } from "./decode";
+import { findKnownSensorId } from "./known-ids";
 import { pushRssi } from "./proximity";
 import type { BleAdvertisement } from "./scan";
 
@@ -66,18 +68,32 @@ function mergePayloads(prev: string[], next: string) {
   return out.length > 8 ? out.slice(-8) : out;
 }
 
-export function mergeSeen(prev: SeenDevice | undefined, ad: BleAdvertisement): SeenDevice {
+export function mergeSeen(
+  prev: SeenDevice | undefined,
+  ad: BleAdvertisement,
+  opts?: { knownIds?: string[] },
+): SeenDevice {
   const id = deviceKey(ad.deviceId, ad.name);
   const fp = payloadFingerprint(ad);
-  const decoded = decodeAdvertisement(ad) ?? prev?.decoded ?? null;
+  const fresh = decodeAdvertisement({ ...ad }, { knownIds: opts?.knownIds });
+  const decoded =
+    fresh && isConsistentWithPrevious(prev?.decoded, fresh) ? fresh : fresh && !prev?.decoded ? fresh : (prev?.decoded ?? null);
   const name = ad.name.trim() || prev?.name || "";
   const serviceUuids = mergeUuids(prev?.serviceUuids ?? [], ad.serviceUuids);
   const payloads = mergePayloads(prev?.payloads ?? [], fp);
   const count = (prev?.count ?? 0) + 1;
+  const manufacturerData = { ...(prev?.manufacturerData ?? {}), ...ad.manufacturerData };
+  const serviceData = { ...(prev?.serviceData ?? {}), ...ad.serviceData };
+  const knownIdMatched = !!findKnownSensorId(
+    { deviceId: ad.deviceId || prev?.deviceId, name, aliases: prev?.aliases, manufacturerData, serviceData },
+    (opts?.knownIds ?? []).map((kid) => ({ id: kid, nickname: "" })),
+  );
   const classed = classifyDevice({
     name,
     serviceUuids,
+    manufacturerData,
     decoded: !!decoded,
+    knownIdMatched,
     distinctPayloads: payloads.length,
     advertisementCount: count,
   });
@@ -98,8 +114,8 @@ export function mergeSeen(prev: SeenDevice | undefined, ad: BleAdvertisement): S
     count,
     firstSeen: prev?.firstSeen ?? ad.at,
     lastSeen: ad.at,
-    manufacturerData: { ...(prev?.manufacturerData ?? {}), ...ad.manufacturerData },
-    serviceData: { ...(prev?.serviceData ?? {}), ...ad.serviceData },
+    manufacturerData,
+    serviceData,
     serviceUuids,
     payloads,
     decoded,
@@ -110,7 +126,7 @@ export function mergeSeen(prev: SeenDevice | undefined, ad: BleAdvertisement): S
 }
 
 export function sortSeen(devices: SeenDevice[]) {
-  const rank = { probable: 0, possible: 1, other: 2 };
+  const rank: Record<DeviceClass, number> = { probable: 0, possible: 1, other: 2, known: 3 };
   return [...devices].sort((a, b) => {
     const r = rank[a.klass] - rank[b.klass];
     if (r !== 0) return r;
@@ -126,7 +142,7 @@ export function pruneSeen(map: Record<string, SeenDevice>): Record<string, SeenD
   const keep = new Set(
     list
       .sort((a, b) => {
-        const rank = { probable: 0, possible: 1, other: 2 };
+        const rank: Record<DeviceClass, number> = { probable: 0, possible: 1, other: 2, known: 3 };
         const r = rank[a.klass] - rank[b.klass];
         return r !== 0 ? r : b.lastSeen - a.lastSeen;
       })

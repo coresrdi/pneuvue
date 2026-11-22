@@ -21,6 +21,7 @@ import { canSweepBluetooth, pickBluetoothSensor, readingFromAdvertisement, sweep
 import { IdentifyPanel } from "@/components/tpms/identify-panel";
 import { ListenPanel } from "@/components/tpms/listen-panel";
 import { frNum } from "@/lib/tpms/format";
+import { psiToBar } from "@/lib/tpms/decode";
 import { acquireScan, canPassiveScan, subscribe } from "@/lib/tpms/scan";
 import {
   WHEELS,
@@ -532,6 +533,10 @@ function TireCard({
             </span>
             <span className="text-xs font-semibold text-muted">{unit === "kpa" ? "kPa" : "psi"}</span>
           </span>
+          <span className="mt-0.5 block text-xs font-semibold tabular-nums text-muted">
+            {frNum(psiToBar(row.reading.psi), 1)} bar
+            {unit === "kpa" ? "" : ""}
+          </span>
           <span className="mt-1 block text-sm font-semibold tabular-nums">
             {frNum(row.reading.temp, 1)}°C
           </span>
@@ -662,7 +667,9 @@ function AssignPanel(props: {
           const live = liveForSensor(liveReadings, id);
           const nick = labelFor(id);
           const shown = nick ?? id;
-          const reading = live ? `${shown} · ${unit === "kpa" ? `${Math.round(live.psi / 0.145037737)} kPa` : `${live.psi.toFixed(1)} psi`}` : shown;
+          const reading = live
+            ? `${shown} · ${frNum(psiToBar(live.psi), 1)} bar · ${unit === "kpa" ? `${Math.round(live.psi / 0.145037737)} kPa` : `${live.psi.toFixed(1)} psi`}`
+            : shown;
           return (
             <button
               key={id}
