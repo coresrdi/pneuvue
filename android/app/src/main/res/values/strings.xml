@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">PneuVue</string>
+    <string name="title_activity_main">PneuVue</string>
+    <string name="package_name">com.coresrdi.pneuvue</string>
+    <string name="custom_url_scheme">com.coresrdi.pneuvue</string>
+</resources>
