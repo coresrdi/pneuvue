@@ -86,10 +86,89 @@ test.describe("PneuVue — écran principal", () => {
 
     await page.getByRole("button", { name: /Assigner les capteurs/ }).click();
     await expect(page.getByText(/Capteurs · Été/)).toBeVisible();
-    await expect(page.getByRole("button", { name: /Choisir/ })).toBeVisible();
-    await page.getByRole("button", { name: /Choisir/ }).click();
+    await expect(page.getByRole("button", { name: "Liste du système" })).toBeVisible();
+    await page.getByRole("button", { name: "Liste du système" }).click();
     // Sans Web Bluetooth utilisable, un message d'erreur lisible doit apparaître (pas un plantage).
     await expect(page.getByText(/Bluetooth indisponible/)).toBeVisible();
     await page.screenshot({ path: shotName(page, "assigner"), fullPage: true });
+  });
+});
+
+const ZEEPIN_35 = "000180eaca108a78e8ad0300e60a00005b00";
+
+async function ingest(page: Page, ad: {
+  deviceId: string;
+  name?: string;
+  rssi?: number | null;
+  manufacturerData?: Record<string, string>;
+  serviceUuids?: string[];
+}) {
+  await page.evaluate((payload) => {
+    window.__pneuvueTest?.ingest({
+      deviceId: payload.deviceId,
+      name: payload.name ?? "",
+      rssi: payload.rssi ?? -70,
+      at: Date.now(),
+      manufacturerData: payload.manufacturerData ?? {},
+      serviceData: {},
+      serviceUuids: payload.serviceUuids ?? [],
+    });
+  }, ad);
+}
+
+test.describe("PneuVue — écoute et identification", () => {
+  test("écoute : capteur probable avec pression, Govee masqué", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: /Assigner les capteurs/ }).click();
+    await page.getByRole("button", { name: "Écouter les capteurs" }).click();
+    await expect(page.getByRole("heading", { name: "Écouter les capteurs" })).toBeVisible();
+    await ingest(page, {
+      deviceId: "aa:bb:cc:10:8a:78",
+      name: "TPMS_8A78",
+      rssi: -68,
+      manufacturerData: { "0001": ZEEPIN_35 },
+    });
+    await ingest(page, { deviceId: "11:22:33:44:55:66", name: "Govee_H705D_0669", rssi: -50 });
+    await expect(page.getByText("TPMS_8A78")).toBeVisible();
+    await expect(page.getByText(/psi|kPa/).first()).toBeVisible();
+    await expect(page.getByText("Govee_H705D_0669")).toHaveCount(0);
+    await page.getByRole("button", { name: /Afficher tous les appareils/ }).click();
+    await expect(page.getByText("Govee_H705D_0669")).toBeVisible();
+    await page.screenshot({ path: shotName(page, "ecoute"), fullPage: true });
+  });
+
+  test("identifier : rapprocher le téléphone propose le capteur le plus proche", async ({ page }) => {
+    test.setTimeout(45_000);
+    await page.goto("/");
+    await page.getByRole("button", { name: /Assigner les capteurs/ }).click();
+    await page.getByRole("button", { name: "Identifier un capteur" }).click();
+    await expect(page.getByRole("heading", { name: "Identifier un capteur" })).toBeVisible();
+    await page.getByRole("button", { name: /Rapprocher le téléphone/ }).click();
+    await page.getByRole("dialog").getByRole("button", { name: /Avant gauche/ }).click();
+    await page.getByRole("button", { name: "Continuer" }).click();
+    await expect(page.getByText(/Colle le téléphone|Reste d'abord/)).toBeVisible();
+    await page.screenshot({ path: shotName(page, "identifier-consignes"), fullPage: true });
+
+    // On injecte avant/pendant : le test accélère le timer en appelant le résultat via plusieurs ads
+    // après Démarrer. Pour un test déterministe, on enchaîne Démarrer puis on injecte tout de suite
+    // (le module de scan unique reçoit les mêmes annonces).
+    await page.getByRole("button", { name: "Démarrer" }).click();
+    await expect(page.getByText(/Signal de base|Colle le téléphone|On mémorise/)).toBeVisible();
+    // Baseline : capteur loin, Govee fort
+    for (let i = 0; i < 4; i++) {
+      await ingest(page, { deviceId: "aa:bb:cc:10:8a:78", name: "TPMS_8A78", rssi: -82, manufacturerData: { "0001": ZEEPIN_35 } });
+      await ingest(page, { deviceId: "11:22:33:44:55:66", name: "Govee_H705D_0669", rssi: -55 });
+    }
+    // La phase proche arrive après 5 s — on attend le texte, puis on injecte un RSSI beaucoup plus fort.
+    await expect(page.getByText("Colle le téléphone sur la valve", { exact: true })).toBeVisible({ timeout: 8000 });
+    for (let i = 0; i < 6; i++) {
+      await ingest(page, { deviceId: "aa:bb:cc:10:8a:78", name: "TPMS_8A78", rssi: -48, manufacturerData: { "0001": ZEEPIN_35 } });
+      await ingest(page, { deviceId: "11:22:33:44:55:66", name: "Govee_H705D_0669", rssi: -54 });
+    }
+    await expect(page.getByText(/Meilleur candidat/i)).toBeVisible({ timeout: 25000 });
+    await expect(page.getByText("TPMS_8A78")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Assigner à cette roue" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Réessayer" })).toBeVisible();
+    await page.screenshot({ path: shotName(page, "identifier-resultat"), fullPage: true });
   });
 });

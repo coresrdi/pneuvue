@@ -9,6 +9,8 @@ export interface DecodedTpms {
   psi: number;
   temp: number;
   bat: number;
+  /** Tension de pile, en volts, si le format la fournit au lieu (ou en plus) d'un pourcentage. */
+  batVolt?: number;
   alarm: boolean;
   /** Nom court du format retenu, pour le journal / le débogage. */
   format: "zeepin-16" | "vendor-1e20";
@@ -147,4 +149,30 @@ export function hexToBytes(hex: string) {
   const out = new Uint8Array(clean.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
   return out;
+}
+
+
+export function bytesToHex(bytes: Uint8Array) {
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export interface AdvertisementFields {
+  manufacturerData: Record<string, string>;
+  serviceData: Record<string, string>;
+  serviceUuids?: string[];
+  name?: string;
+}
+
+/**
+ * Tente tous les formats connus à partir des données d'une annonce (fabricant + services).
+ */
+export function decodeAdvertisement(ad: AdvertisementFields): DecodedTpms | null {
+  for (const [cid, hex] of Object.entries(ad.manufacturerData)) {
+    const company = Number.parseInt(cid, 16);
+    const decoded = decodeTpmsAdvertisement(hexToBytes(hex), Number.isFinite(company) ? company : undefined);
+    if (decoded) return decoded;
+  }
+  // Les UUID FBB0 / 27A5 identifient un capteur, mais le payload de service
+  // n'est pas assez documenté pour un décodage fiable : on ne devine pas la pression.
+  return null;
 }

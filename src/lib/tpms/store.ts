@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { findLive, normalizeSensorId } from "./decode";
+import { mergeSeen, pruneSeen, type SeenDevice } from "./devices";
+import type { PressureUnit } from "./format";
+import type { BleAdvertisement } from "./scan";
 import {
   JEEP_WHEELS,
   PRESET_SENSORS,
@@ -24,6 +27,8 @@ interface TpmsState {
   hintDismissed: boolean;
   leakWheel: WheelId | null;
   liveReadings: Record<string, LiveReading>;
+  pressureUnit: PressureUnit;
+  seenDevices: Record<string, SeenDevice>;
   setSeason: (season: Season) => void;
   setActive: (id: string) => void;
   assign: (wheel: WheelId, sensorId: string | null) => void;
@@ -38,6 +43,9 @@ interface TpmsState {
   dismissHint: () => void;
   setLeakWheel: (wheel: WheelId | null) => void;
   upsertLive: (ids: string[], reading: LiveReading) => void;
+  setPressureUnit: (unit: PressureUnit) => void;
+  ingestAdvertisement: (ad: BleAdvertisement) => void;
+  clearSeenDevices: () => void;
 }
 
 const DEFAULT_ID = "jeep-gc";
@@ -96,6 +104,8 @@ export const useTpms = create<TpmsState>()(
       hintDismissed: false,
       leakWheel: null,
       liveReadings: {},
+      pressureUnit: "psi",
+      seenDevices: {},
       setSeason: (season) => set({ season }),
       setActive: (id) => set({ activeId: id, leakWheel: null }),
       assign: (wheel, sensorId) => {
@@ -203,6 +213,17 @@ export const useTpms = create<TpmsState>()(
           return { liveReadings };
         });
       },
+      setPressureUnit: (pressureUnit) => set({ pressureUnit }),
+      ingestAdvertisement: (ad) => {
+        set((s) => {
+          const prev = Object.values(s.seenDevices).find((d) => d.deviceId === ad.deviceId || d.id === ad.deviceId);
+          const next = mergeSeen(prev, ad);
+          const seenDevices = { ...s.seenDevices };
+          if (prev && prev.id !== next.id) delete seenDevices[prev.id];
+          return { seenDevices: pruneSeen({ ...seenDevices, [next.id]: next }) };
+        });
+      },
+      clearSeenDevices: () => set({ seenDevices: {} }),
     }),
     {
       name: "pneuvue",
@@ -216,6 +237,8 @@ export const useTpms = create<TpmsState>()(
         muted: s.muted,
         demo: s.demo,
         hintDismissed: s.hintDismissed,
+        pressureUnit: s.pressureUnit,
+        seenDevices: s.seenDevices,
       }),
     },
   ),

@@ -17,7 +17,11 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import { canSweepBluetooth, pickBluetoothSensor, startLiveListen, sweepBluetooth } from "@/lib/tpms/bluetooth";
+import { canSweepBluetooth, pickBluetoothSensor, readingFromAdvertisement, sweepBluetooth } from "@/lib/tpms/bluetooth";
+import { IdentifyPanel } from "@/components/tpms/identify-panel";
+import { ListenPanel } from "@/components/tpms/listen-panel";
+import { frNum } from "@/lib/tpms/format";
+import { acquireScan, canPassiveScan, subscribe } from "@/lib/tpms/scan";
 import {
   WHEELS,
   alertFor,
@@ -30,7 +34,7 @@ import {
 } from "@/lib/tpms/model";
 import { activeVehicle, liveForSensor, useTpms } from "@/lib/tpms/store";
 
-type Panel = "vehicles" | "settings" | "assign" | null;
+type Panel = "vehicles" | "settings" | "assign" | "listen" | "identify" | null;
 
 function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -77,29 +81,32 @@ export function PneuApp() {
 
   useEffect(() => {
     let stopped = false;
-    let handle: { stop: () => Promise<void> } | null = null;
+    let release: (() => Promise<void>) | undefined;
+    const unsub = subscribe((ad) => {
+      const s = useTpms.getState();
+      s.ingestAdvertisement(ad);
+      const live = readingFromAdvertisement(ad);
+      if (live) {
+        s.upsertLive(live.ids, { psi: live.psi, temp: live.temp, bat: live.bat, at: live.at });
+      }
+    });
     void (async () => {
+      if (!canPassiveScan()) return;
       try {
-        const h = await startLiveListen((reading) => {
-          useTpms.getState().upsertLive(reading.ids, {
-            psi: reading.psi,
-            temp: reading.temp,
-            bat: reading.bat,
-            at: reading.at,
-          });
-        });
+        const rel = await acquireScan("live");
         if (stopped) {
-          await h?.stop();
+          await rel();
           return;
         }
-        handle = h;
+        release = rel;
       } catch {
         // Permission refusée ou Bluetooth éteint : l'app reste utilisable en simulation.
       }
     })();
     return () => {
       stopped = true;
-      void handle?.stop();
+      unsub();
+      void release?.();
     };
   }, []);
 
@@ -334,7 +341,7 @@ export function PneuApp() {
       {panel && (
         <div className="fixed inset-0 z-40 flex items-end justify-center bg-fg/40" onClick={() => setPanel(null)} role="presentation">
           <div
-            className="max-h-[88dvh] w-full max-w-[430px] overflow-y-auto rounded-t-3xl bg-card px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl"
+            className="max-h-[92dvh] w-full max-w-[34rem] overflow-y-auto rounded-t-3xl bg-card px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl"
             onClick={(event) => event.stopPropagation()}
             role="dialog"
             aria-modal="true"
@@ -359,6 +366,25 @@ export function PneuApp() {
                 onClear={() => state.assign(focus, null)}
                 onCopy={vehicle.layout === "jeep_trailer" ? state.copyJeepToWinter : undefined}
                 onReset={state.clearSeason}
+                onListen={() => setPanel("listen")}
+                onIdentify={() => setPanel("identify")}
+                onClose={() => setPanel(null)}
+              />
+            )}
+            {panel === "listen" && (
+              <ListenPanel
+                wheels={visible}
+                focus={focus}
+                setFocus={setFocus}
+                onIdentify={() => setPanel("identify")}
+                onClose={() => setPanel(null)}
+              />
+            )}
+            {panel === "identify" && (
+              <IdentifyPanel
+                wheels={visible}
+                focus={focus}
+                setFocus={setFocus}
                 onClose={() => setPanel(null)}
               />
             )}
@@ -398,6 +424,8 @@ export function PneuApp() {
                 onName={(name) => state.updateActive({ name })}
                 onTrailer={(trailerName) => state.updateActive({ trailerName })}
                 onThreshold={(patch) => state.updateActive(patch)}
+                unit={state.pressureUnit}
+                onUnit={state.setPressureUnit}
                 onDemo={state.setDemo}
                 onLeak={() => state.setLeakWheel(state.leakWheel === "jeep_fl" ? null : "jeep_fl")}
                 onCopy={vehicle.layout === "jeep_trailer" ? state.copyJeepToWinter : undefined}
@@ -464,6 +492,7 @@ function TireCard({
   row: { id: WheelId; sensorId?: string; reading: { psi: number; temp: number; bat: number; source: "live" | "demo" } | null; alert: string | null };
   onPress: () => void;
 }) {
+  const unit = useTpms((s) => s.pressureUnit);
   const meta = WHEELS[row.id];
   const alert = row.alert;
   return (
@@ -483,12 +512,12 @@ function TireCard({
         <>
           <span className="mt-0.5 flex items-baseline gap-1">
             <span className={cx("font-display text-3xl leading-none font-semibold tabular-nums", alert ? "text-alert" : "text-fg")}>
-              {row.reading.psi.toFixed(1)}
+              {unit === "kpa" ? Math.round(row.reading.psi / 0.145037737) : row.reading.psi.toFixed(1)}
             </span>
-            <span className="text-xs font-semibold text-muted">Psi</span>
+            <span className="text-xs font-semibold text-muted">{unit === "kpa" ? "kPa" : "psi"}</span>
           </span>
           <span className="mt-1 block text-sm font-semibold tabular-nums">
-            {row.reading.temp.toFixed(1)}°C
+            {frNum(row.reading.temp, 1)}°C
           </span>
           {alert && <span className="mt-0.5 block text-xs font-semibold text-alert">{alert}</span>}
         </>
@@ -525,10 +554,14 @@ function AssignPanel(props: {
   onClear: () => void;
   onCopy?: () => void;
   onReset: () => void;
+  onListen: () => void;
+  onIdentify: () => void;
   onClose: () => void;
 }) {
   const meta = WHEELS[props.focus];
   const current = props.map[props.focus];
+  const liveReadings = useTpms((s) => s.liveReadings);
+  const unit = useTpms((s) => s.pressureUnit);
   const done = props.visible.filter((id) => props.map[id]).length;
   return (
     <div>
@@ -544,26 +577,27 @@ function AssignPanel(props: {
         </button>
       </div>
 
-      <div className="mt-3 flex gap-2">
-        <button type="button" onClick={props.onPick} className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-2xl bg-primary px-3 font-semibold text-primary-fg">
-          <Bluetooth className="size-4" />
-          Choisir
+      <button type="button" onClick={props.onListen} className="mt-3 flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl bg-primary px-3 font-semibold text-primary-fg">
+        <Bluetooth className="size-4" />
+        Écouter les capteurs
+      </button>
+      <button type="button" onClick={props.onIdentify} className="mt-2 min-h-12 w-full rounded-2xl bg-bg font-semibold ring-1 ring-line">
+        Identifier un capteur
+      </button>
+      <div className="mt-2 flex gap-2">
+        <button type="button" onClick={props.onPick} className="min-h-11 flex-1 rounded-2xl bg-bg px-3 text-sm font-semibold ring-1 ring-line">
+          Liste du système
         </button>
         <button
           type="button"
           onClick={props.onSweep}
           disabled={props.scanning || !props.canSweep}
-          className="min-h-11 flex-1 rounded-2xl bg-bg px-3 font-semibold ring-1 ring-line disabled:opacity-50"
+          className="min-h-11 flex-1 rounded-2xl bg-bg px-3 text-sm font-semibold ring-1 ring-line disabled:opacity-50"
         >
-          {props.scanning ? "Balayage…" : "Balayer"}
+          {props.scanning ? "Balayage…" : "Balayer 8 s"}
         </button>
       </div>
       {props.btError && <p className="mt-2 text-sm font-semibold text-alert">{props.btError}</p>}
-      {!props.canSweep && (
-        <p className="mt-2 text-sm text-muted">
-          Le balayage automatique n'est pas offert dans ce navigateur. Dans l'application Android, ou dans Chrome sur un téléphone, tu pourras chercher les capteurs. Tu peux aussi saisir ou choisir un identifiant ci-dessous.
-        </p>
-      )}
 
       <p className="mt-4 text-xs font-semibold tracking-[0.14em] text-muted uppercase">Roue en cours · {meta.short}</p>
       <ul className="mt-2 flex flex-col gap-1.5">
@@ -600,6 +634,8 @@ function AssignPanel(props: {
         {props.known.map((id) => {
           const used = Object.values(props.map).includes(id);
           const here = current === id;
+          const live = liveForSensor(liveReadings, id);
+          const reading = live ? `${id} · ${unit === "kpa" ? `${Math.round(live.psi / 0.145037737)} kPa` : `${live.psi.toFixed(1)} psi`}` : id;
           return (
             <button
               key={id}
@@ -611,7 +647,7 @@ function AssignPanel(props: {
               )}
             >
               {here && <Check className="mr-1 inline size-3.5" />}
-              {id}
+              {reading}
               {used && !here ? " · utilisé" : ""}
             </button>
           );
@@ -762,6 +798,8 @@ function SettingsPanel(props: {
   onName: (name: string) => void;
   onTrailer: (name: string) => void;
   onThreshold: (patch: { minPsi?: number; maxPsi?: number; maxTempC?: number }) => void;
+  unit: "psi" | "kpa";
+  onUnit: (unit: "psi" | "kpa") => void;
   onDemo: (demo: boolean) => void;
   onLeak: () => void;
   onCopy?: () => void;
@@ -777,7 +815,12 @@ function SettingsPanel(props: {
           <X className="size-5" />
         </button>
       </div>
-      <label className="mt-2 block text-sm font-semibold">
+      <p className="mt-3 text-xs font-semibold tracking-[0.14em] text-muted uppercase">Unité de pression</p>
+      <div className="mt-2 grid grid-cols-2 gap-2" role="group" aria-label="Unité de pression">
+        <button type="button" onClick={() => props.onUnit("psi")} className={cx("min-h-11 rounded-2xl font-semibold ring-1", props.unit === "psi" ? "bg-primary text-primary-fg ring-primary" : "bg-bg ring-line")}>psi</button>
+        <button type="button" onClick={() => props.onUnit("kpa")} className={cx("min-h-11 rounded-2xl font-semibold ring-1", props.unit === "kpa" ? "bg-primary text-primary-fg ring-primary" : "bg-bg ring-line")}>kPa</button>
+      </div>
+      <label className="mt-3 block text-sm font-semibold">
         Nom
         <input
           value={props.name}

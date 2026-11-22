@@ -42,3 +42,31 @@ Ce format n'est retenu que si les valeurs passent un contrôle de vraisemblance 
 L'appairage (nom ou identifiant du capteur) reste possible. Tant qu'aucune annonce décodable n'arrive, PneuVue affiche les pressions **simulées** si la simulation est activée, avec la mention « Simulation des pressions ». Dès qu'une annonce valide correspond à un capteur assigné, la carte passe en « En direct ».
 
 Le protocole exact dépend du modèle acheté : si tes capteurs ne sont pas reconnus, un échantillon d'annonce (octets manufacturer data) permettra d'ajouter leur format.
+
+
+## UUID de service (classification, sans décodage de pression)
+
+Beaucoup de capteurs « bouchon de valve » annoncent un UUID 16 bits typique, même quand le payload n'est pas au format ZEEPIN :
+
+| UUID | Usage courant |
+| --- | --- |
+| `0xFBB0` | TPMS BLE génériques (plusieurs usines / applis Android) |
+| `0x27A5` | Autre famille fréquente de capteurs TPMS BLE |
+
+PneuVue classe alors l'appareil comme **capteur de pneu probable**, enregistre le manufacturer data et le service data en hex, et affiche la pression seulement si un format connu est aussi présent.
+
+Les noms `TPMS`, `ZEEPIN`, `SYTPMS`, `BR_…` sont également considérés comme probables.
+
+## Classification et journal
+
+Pendant l'écoute (15 à 30 min) et l'identification, un seul module de scan passif (`requestLEScan`, sans sélecteur natif) enregistre chaque appareil : adresse, nom, RSSI, nombre d'annonces, dernière vue, données brutes, valeurs décodées.
+
+- **Probable** : format connu, UUID FBB0/27A5, ou nom typique.
+- **Possible** : l'annonce change périodiquement (souvent si le véhicule roule) et n'est pas une marque connue (Govee, etc.).
+- **Autres** : masqués par défaut derrière « Afficher tous les appareils ».
+
+Le journal se copie en texte ou en JSON pour ajouter un format encore inconnu à partir des octets.
+
+## Limites
+
+Le scan BLE d'une application Android s'arrête souvent quand l'app passe en arrière-plan ou que l'écran se verrouille, sauf service de premier plan (non utilisé ici). Garde PneuVue ouvert. L'écran est maintenu allumé pendant une écoute ou une identification.
