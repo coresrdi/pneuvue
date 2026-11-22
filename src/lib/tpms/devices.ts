@@ -5,6 +5,7 @@ import {
   sensorAliases,
   type DecodedTpms,
 } from "./decode";
+import { pushRssi } from "./proximity";
 import type { BleAdvertisement } from "./scan";
 
 export interface SeenDevice {
@@ -15,6 +16,8 @@ export interface SeenDevice {
   rssi: number | null;
   rssiMin: number | null;
   rssiMax: number | null;
+  /** Dernières mesures RSSI, pour un lissage (médiane) stable. */
+  rssiSamples: number[];
   count: number;
   firstSeen: number;
   lastSeen: number;
@@ -89,6 +92,7 @@ export function mergeSeen(prev: SeenDevice | undefined, ad: BleAdvertisement): S
     name,
     aliases: [...new Set([...(prev?.aliases ?? []), ...sensorAliases(name, ad.deviceId)])],
     rssi: rssi ?? prev?.rssi ?? null,
+    rssiSamples: pushRssi(prev?.rssiSamples ?? (prev?.rssi != null ? [prev.rssi] : []), rssi),
     rssiMin,
     rssiMax,
     count,

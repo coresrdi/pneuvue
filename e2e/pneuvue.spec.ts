@@ -137,6 +137,53 @@ test.describe("PneuVue — écoute et identification", () => {
     await page.screenshot({ path: shotName(page, "ecoute"), fullPage: true });
   });
 
+  test("écoute : tri par proximité, exclusion et surnom", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: /Assigner les capteurs/ }).click();
+    await page.getByRole("button", { name: "Écouter les capteurs" }).click();
+    await ingest(page, {
+      deviceId: "aa:bb:cc:10:8a:78",
+      name: "TPMS_8A78",
+      rssi: -86,
+      manufacturerData: { "0001": ZEEPIN_35 },
+    });
+    await ingest(page, { deviceId: "11:22:33:44:55:66", name: "Govee_H705D_0669", rssi: -46 });
+    await ingest(page, { deviceId: "22:22:22:22:22:22", name: "Inconnu_AA", rssi: -64 });
+
+    await page.getByRole("button", { name: "Proximité" }).click();
+    const items = page.getByRole("listitem");
+    await expect(items.nth(0)).toContainText("Govee_H705D_0669");
+    await expect(items.nth(1)).toContainText("Inconnu_AA");
+    await expect(items.nth(2)).toContainText("TPMS_8A78");
+    await expect(page.getByText("Très proche").first()).toBeVisible();
+    await expect(page.getByText("Proche").first()).toBeVisible();
+    await expect(page.getByText("Loin").first()).toBeVisible();
+    await expect(page.getByText("-46 dBm")).toBeVisible();
+    await page.screenshot({ path: shotName(page, "ecoute-proximite"), fullPage: true });
+
+    await items.nth(0).getByRole("button", { name: "Pas un capteur" }).click();
+    await expect(page.getByText("Govee_H705D_0669")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Appareils cachés \(1\)/ })).toBeVisible();
+    await page.screenshot({ path: shotName(page, "ecoute-caches"), fullPage: true });
+
+    await page.getByRole("button", { name: /Appareils cachés \(1\)/ }).click();
+    await expect(page.getByText("Govee_H705D_0669")).toBeVisible();
+    await page.getByRole("button", { name: "Restaurer", exact: true }).click();
+    await expect(page.getByRole("listitem").filter({ hasText: "Govee_H705D_0669" })).toBeVisible();
+
+    const tpms = page.getByRole("listitem").filter({ hasText: "TPMS_8A78" });
+    await tpms.getByRole("button", { name: "Assigner à une roue" }).click();
+    await tpms.getByRole("button", { name: "AV G", exact: true }).click();
+    await expect(page.getByRole("listitem").filter({ hasText: "Capteur roue AV G" })).toBeVisible();
+    await expect(page.getByText("aa:bb:cc:10:8a:78")).toBeVisible();
+
+    await page.getByRole("listitem").filter({ hasText: "Capteur roue AV G" }).getByRole("button", { name: "Renommer" }).click();
+    await page.getByLabel("Surnom").fill("Capteur avant");
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page.getByRole("listitem").filter({ hasText: "Capteur avant" })).toBeVisible();
+    await page.screenshot({ path: shotName(page, "ecoute-surnom"), fullPage: true });
+  });
+
   test("identifier : rapprocher le téléphone propose le capteur le plus proche", async ({ page }) => {
     test.setTimeout(45_000);
     await page.goto("/");

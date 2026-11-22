@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { findLive, normalizeSensorId } from "./decode";
 import { mergeSeen, pruneSeen, type SeenDevice } from "./devices";
+import { withHidden, withoutHidden } from "./exclusion";
+import { applyNickname } from "./nicknames";
 import type { PressureUnit } from "./format";
 import type { BleAdvertisement } from "./scan";
 import {
@@ -29,6 +31,8 @@ interface TpmsState {
   liveReadings: Record<string, LiveReading>;
   pressureUnit: PressureUnit;
   seenDevices: Record<string, SeenDevice>;
+  hiddenSensors: string[];
+  nicknames: Record<string, string>;
   setSeason: (season: Season) => void;
   setActive: (id: string) => void;
   assign: (wheel: WheelId, sensorId: string | null) => void;
@@ -46,6 +50,11 @@ interface TpmsState {
   setPressureUnit: (unit: PressureUnit) => void;
   ingestAdvertisement: (ad: BleAdvertisement) => void;
   clearSeenDevices: () => void;
+  hideSensor: (key: string) => void;
+  restoreSensor: (key: string) => void;
+  restoreAllHidden: () => void;
+  hideSensors: (keys: string[]) => void;
+  setNicknameFor: (ref: { id?: string; deviceId?: string; aliases?: string[] }, value: string) => void;
 }
 
 const DEFAULT_ID = "jeep-gc";
@@ -106,6 +115,8 @@ export const useTpms = create<TpmsState>()(
       liveReadings: {},
       pressureUnit: "psi",
       seenDevices: {},
+      hiddenSensors: [],
+      nicknames: {},
       setSeason: (season) => set({ season }),
       setActive: (id) => set({ activeId: id, leakWheel: null }),
       assign: (wheel, sensorId) => {
@@ -224,6 +235,12 @@ export const useTpms = create<TpmsState>()(
         });
       },
       clearSeenDevices: () => set({ seenDevices: {} }),
+      hideSensor: (key) => set((s) => ({ hiddenSensors: withHidden(s.hiddenSensors, key) })),
+      restoreSensor: (key) => set((s) => ({ hiddenSensors: withoutHidden(s.hiddenSensors, key) })),
+      restoreAllHidden: () => set({ hiddenSensors: [] }),
+      hideSensors: (keys) =>
+        set((s) => ({ hiddenSensors: keys.reduce((acc, k) => withHidden(acc, k), s.hiddenSensors) })),
+      setNicknameFor: (ref, value) => set((s) => ({ nicknames: applyNickname(s.nicknames, ref, value) })),
     }),
     {
       name: "pneuvue",
@@ -239,6 +256,8 @@ export const useTpms = create<TpmsState>()(
         hintDismissed: s.hintDismissed,
         pressureUnit: s.pressureUnit,
         seenDevices: s.seenDevices,
+        hiddenSensors: s.hiddenSensors,
+        nicknames: s.nicknames,
       }),
     },
   ),

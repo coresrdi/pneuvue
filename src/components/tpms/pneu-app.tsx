@@ -32,6 +32,8 @@ import {
   type Season,
   type WheelId,
 } from "@/lib/tpms/model";
+import { normalizeSensorId } from "@/lib/tpms/decode";
+import { nicknameForSensorId, nicknameKeysFor, suggestedNickname } from "@/lib/tpms/nicknames";
 import { activeVehicle, liveForSensor, useTpms } from "@/lib/tpms/store";
 
 type Panel = "vehicles" | "settings" | "assign" | "listen" | "identify" | null;
@@ -158,6 +160,7 @@ export function PneuApp() {
       if (!picked) return;
       state.rememberSensor(picked.label);
       state.assign(focus, picked.label);
+      proposeNickname(focus, picked.label);
       advance(focus, picked.label);
     } catch (error) {
       setBtError(error instanceof Error ? error.message : "Bluetooth refusé.");
@@ -186,10 +189,20 @@ export function PneuApp() {
     if (next) setFocus(next);
   };
 
+  const proposeNickname = (wheel: WheelId, sensorId: string) => {
+    const s = useTpms.getState();
+    const seen = Object.values(s.seenDevices);
+    if (nicknameForSensorId(sensorId, s.nicknames, seen)) return;
+    const needle = normalizeSensorId(sensorId);
+    const device = seen.find((d) => nicknameKeysFor(d).includes(needle)) ?? { id: sensorId, deviceId: sensorId };
+    s.setNicknameFor(device, suggestedNickname(wheel, activeVehicle(s)));
+  };
+
   const onAssign = (sensorId: string) => {
     const clean = sensorId.trim();
     if (!clean) return;
     state.assign(focus, clean);
+    proposeNickname(focus, clean);
     setDraftId("");
     advance(focus, clean);
   };
@@ -493,6 +506,9 @@ function TireCard({
   onPress: () => void;
 }) {
   const unit = useTpms((s) => s.pressureUnit);
+  const nicknames = useTpms((s) => s.nicknames);
+  const seenDevices = useTpms((s) => s.seenDevices);
+  const nick = row.sensorId ? nicknameForSensorId(row.sensorId, nicknames, Object.values(seenDevices)) : null;
   const meta = WHEELS[row.id];
   const alert = row.alert;
   return (
@@ -520,11 +536,13 @@ function TireCard({
             {frNum(row.reading.temp, 1)}°C
           </span>
           {alert && <span className="mt-0.5 block text-xs font-semibold text-alert">{alert}</span>}
+          {nick && <span className="mt-0.5 block truncate text-xs font-semibold text-muted">{nick}</span>}
         </>
       ) : (
         <>
           <span className="mt-1 block font-display text-2xl leading-none text-muted">—</span>
           <span className="mt-1 block text-xs font-semibold text-primary">Assigner</span>
+          {nick && <span className="mt-0.5 block truncate text-xs font-semibold text-muted">{nick}</span>}
         </>
       )}
     </button>
@@ -562,6 +580,10 @@ function AssignPanel(props: {
   const current = props.map[props.focus];
   const liveReadings = useTpms((s) => s.liveReadings);
   const unit = useTpms((s) => s.pressureUnit);
+  const nicknames = useTpms((s) => s.nicknames);
+  const seenDevices = useTpms((s) => s.seenDevices);
+  const labelFor = (sensorId?: string) =>
+    sensorId ? nicknameForSensorId(sensorId, nicknames, Object.values(seenDevices)) : null;
   const done = props.visible.filter((id) => props.map[id]).length;
   return (
     <div>
@@ -619,7 +641,10 @@ function AssignPanel(props: {
                   <span className="font-semibold">{wheel.short}</span>
                   <span className={cx("ml-2 text-sm", selected ? "text-primary-fg/80" : "text-muted")}>{wheel.name}</span>
                 </span>
-                <span className="font-semibold tabular-nums">{sensor ?? "—"}</span>
+                <span className="max-w-[55%] text-right">
+                  <span className="block truncate font-semibold">{sensor ? (labelFor(sensor) ?? sensor) : "—"}</span>
+                  {sensor && labelFor(sensor) ? <span className={cx("block truncate text-xs tabular-nums", selected ? "text-primary-fg/80" : "text-muted")}>{sensor}</span> : null}
+                </span>
               </button>
             </li>
           );
@@ -635,7 +660,9 @@ function AssignPanel(props: {
           const used = Object.values(props.map).includes(id);
           const here = current === id;
           const live = liveForSensor(liveReadings, id);
-          const reading = live ? `${id} · ${unit === "kpa" ? `${Math.round(live.psi / 0.145037737)} kPa` : `${live.psi.toFixed(1)} psi`}` : id;
+          const nick = labelFor(id);
+          const shown = nick ?? id;
+          const reading = live ? `${shown} · ${unit === "kpa" ? `${Math.round(live.psi / 0.145037737)} kPa` : `${live.psi.toFixed(1)} psi`}` : shown;
           return (
             <button
               key={id}

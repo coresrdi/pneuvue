@@ -2,11 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { averageRssi, confidenceLabel, peakRssi, scoreApproach, scorePressureChange, type Confidence } from "@/lib/tpms/identify";
 import { decodeAdvertisement, normalizeSensorId } from "@/lib/tpms/decode";
 import { payloadFingerprint, preferredSensorId, type SeenDevice } from "@/lib/tpms/devices";
+import { isExcluded } from "@/lib/tpms/exclusion";
+import { displayName, lookupNickname, suggestedNickname } from "@/lib/tpms/nicknames";
 import { formatCountdown, formatReadingLine } from "@/lib/tpms/format";
 import { allowSleep, stayAwake } from "@/lib/tpms/keep-awake";
 import { WHEELS, type WheelId } from "@/lib/tpms/model";
 import { acquireScan, canPassiveScan, subscribe, type BleAdvertisement } from "@/lib/tpms/scan";
-import { useTpms } from "@/lib/tpms/store";
+import { activeVehicle, useTpms } from "@/lib/tpms/store";
+import { RenameForm } from "@/components/tpms/device-list";
 
 type Method = "approach" | "pressure";
 type Phase = "method" | "wheel" | "instructions" | "running" | "result";
@@ -82,7 +85,8 @@ export function IdentifyPanel(props: {
       }
       // finished
       window.clearInterval(tickId);
-      setResult(finish(method, wheel, samples.current, useTpms.getState().seenDevices));
+      const snap = useTpms.getState();
+      setResult(finish(method, wheel, samples.current, snap.seenDevices, snap.hiddenSensors));
       setPhase("result");
     }, 200);
 
@@ -150,7 +154,12 @@ export function IdentifyPanel(props: {
           unit={state.pressureUnit}
           onAssign={() => {
             if (!result?.device) return;
-            state.assign(wheel, preferredSensorId(result.device));
+            const device = result.device;
+            state.assign(wheel, preferredSensorId(device));
+            const now = useTpms.getState();
+            if (!lookupNickname(device, now.nicknames)) {
+              now.setNicknameFor(device, suggestedNickname(wheel, activeVehicle(now)));
+            }
             props.onClose();
           }}
           onRetry={() => {
@@ -336,8 +345,7 @@ function ResultStep(props: {
         <>
           <p className="text-lg text-muted">Meilleur candidat pour {meta.short} — {meta.name}</p>
           <div className="mt-3 rounded-3xl bg-bg px-4 py-4 ring-1 ring-line">
-            <p className="font-display text-2xl font-semibold leading-tight">{d.name || "Sans nom"}</p>
-            <p className="mt-1 break-all text-base text-muted">{d.deviceId}</p>
+            <CandidateName device={d} />
             <p className="mt-3 text-xl font-semibold leading-snug">{line || "Données non décodées (voir le journal)."}</p>
             <p className="mt-2 text-lg font-semibold text-ok">{confidenceLabel(r!.confidence)}</p>
             <p className="mt-1 text-base leading-snug text-muted">{r!.detail}</p>
@@ -388,10 +396,12 @@ function finish(
   _wheel: WheelId,
   s: SessionSamples,
   seen: Record<string, SeenDevice>,
+  hidden: string[],
 ): IdentifyResult {
   const norm = (v: string) => normalizeSensorId(v);
   const byId = (id: string) =>
     Object.values(seen).find((d) => d.deviceId === id || d.id === id || norm(d.deviceId) === norm(id) || norm(d.id) === norm(id));
+  const allowed = (id: string) => !isExcluded(byId(id) ?? { id, deviceId: id }, hidden);
   if (method === "approach") {
     const baseline: Record<string, number> = {};
     const close: Record<string, number> = {};
@@ -403,7 +413,7 @@ function finish(
       const peak = peakRssi(arr);
       if (peak != null) close[id] = peak;
     }
-    const scores = scoreApproach(baseline, close);
+    const scores = scoreApproach(baseline, close).filter((sc) => allowed(sc.id));
     const top = scores[0];
     const device = top ? byId(top.id) ?? null : null;
     if (!top || !device) {
@@ -428,7 +438,7 @@ function finish(
     }
     return out;
   };
-  const scores = scorePressureChange(withPsi(s.before), withPsi(s.after));
+  const scores = scorePressureChange(withPsi(s.before), withPsi(s.after)).filter((sc) => allowed(sc.id));
   const top = scores[0];
   const device = top ? byId(top.id) ?? null : null;
   if (!top || !device) {
@@ -448,6 +458,36 @@ function finish(
     .map((sc) => byId(sc.id))
     .filter((d): d is SeenDevice => !!d);
   return { device, confidence: top.confidence, detail, runners };
+}
+
+function CandidateName({ device }: { device: SeenDevice }) {
+  const nicknames = useTpms((s) => s.nicknames);
+  const setNicknameFor = useTpms((s) => s.setNicknameFor);
+  const [renaming, setRenaming] = useState(false);
+  return (
+    <>
+      <p className="font-display text-2xl font-semibold leading-tight">{displayName(device, nicknames)}</p>
+      <p className="mt-1 break-all text-base text-muted">{device.deviceId}</p>
+      {renaming ? (
+        <RenameForm
+          initial={lookupNickname(device, nicknames) || device.name || ""}
+          onSave={(value) => {
+            setNicknameFor(device, value);
+            setRenaming(false);
+          }}
+          onClear={() => {
+            setNicknameFor(device, "");
+            setRenaming(false);
+          }}
+          onCancel={() => setRenaming(false)}
+        />
+      ) : (
+        <button type="button" onClick={() => setRenaming(true)} className="mt-2 min-h-12 w-full rounded-2xl bg-card text-base font-semibold ring-1 ring-line">
+          Renommer
+        </button>
+      )}
+    </>
+  );
 }
 
 function cx(...parts: Array<string | false | null | undefined>) {

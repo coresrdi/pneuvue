@@ -65,6 +65,12 @@ Pendant l'écoute (15 à 30 min) et l'identification, un seul module de scan pas
 - **Possible** : l'annonce change périodiquement (souvent si le véhicule roule) et n'est pas une marque connue (Govee, etc.).
 - **Autres** : masqués par défaut derrière « Afficher tous les appareils ».
 
+On peut trier la liste par **Proximité** (RSSI lissé, médiane des dernières annonces), par capteurs probables, ou par appareils récents. L'ordre par proximité se met à jour toutes les 1,5 s, ou seulement si l'écart de signal est significatif. Chaque ligne affiche des barres, « Très proche / Proche / Loin », et la valeur en dBm.
+
+« Pas un capteur » retire un appareil de la liste visible (liste persistante par adresse MAC). « Appareils cachés (N) » permet de les restaurer un par un ou tous. On peut aussi cacher d'un coup les non-probables ou les appareils loin. Les appareils exclus ne sont jamais proposés dans « Identifier un capteur ».
+
+Un **surnom** (ex. « Capteur roue AV D ») se mémorise par MAC et s'affiche partout à la place du nom, avec l'adresse en petit dessous. À l'assignation, ce format est proposé selon la roue (AV G, AR D, roulotte, secours, etc.) ; on peut le modifier ou l'effacer.
+
 Le journal se copie en texte ou en JSON pour ajouter un format encore inconnu à partir des octets.
 
 ## Limites
