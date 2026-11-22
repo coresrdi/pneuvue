@@ -17,7 +17,7 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import { bluetoothAvailable, pickBluetoothSensor, sweepBluetooth } from "@/lib/tpms/bluetooth";
+import { canSweepBluetooth, pickBluetoothSensor, startLiveListen, sweepBluetooth } from "@/lib/tpms/bluetooth";
 import {
   WHEELS,
   alertFor,
@@ -28,7 +28,7 @@ import {
   type Season,
   type WheelId,
 } from "@/lib/tpms/model";
-import { activeVehicle, useTpms } from "@/lib/tpms/store";
+import { activeVehicle, liveForSensor, useTpms } from "@/lib/tpms/store";
 
 type Panel = "vehicles" | "settings" | "assign" | null;
 
@@ -75,6 +75,34 @@ export function PneuApp() {
     return () => window.clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    let stopped = false;
+    let handle: { stop: () => Promise<void> } | null = null;
+    void (async () => {
+      try {
+        const h = await startLiveListen((reading) => {
+          useTpms.getState().upsertLive(reading.ids, {
+            psi: reading.psi,
+            temp: reading.temp,
+            bat: reading.bat,
+            at: reading.at,
+          });
+        });
+        if (stopped) {
+          await h?.stop();
+          return;
+        }
+        handle = h;
+      } catch {
+        // Permission refusée ou Bluetooth éteint : l'app reste utilisable en simulation.
+      }
+    })();
+    return () => {
+      stopped = true;
+      void handle?.stop();
+    };
+  }, []);
+
   const season: Season = vehicle.layout === "suv5" ? "winter" : state.season;
   const visible = wheelsFor(vehicle.layout, season);
   const map = state.assignments[vehicle.id]?.[season] ?? {};
@@ -83,11 +111,12 @@ export function PneuApp() {
     return visible.map((id) => {
       const sensorId = map[id];
       const leak = state.demo && state.leakWheel === id;
-      const reading = resolveReading(sensorId, now, state.demo, undefined, leak);
+      const live = liveForSensor(state.liveReadings, sensorId);
+      const reading = resolveReading(sensorId, now, state.demo, live, leak);
       const alert = alertFor(reading, vehicle, leak);
       return { id, sensorId, reading, alert, leak };
     });
-  }, [visible, map, now, state.demo, state.leakWheel, vehicle]);
+  }, [visible, map, now, state.demo, state.leakWheel, state.liveReadings, vehicle]);
 
   const alertKey = rows
     .filter((r) => r.alert)
@@ -237,8 +266,11 @@ export function PneuApp() {
               {assignedCount}/{visible.length}
             </span>
           </button>
-          {state.demo && (
+          {rows.some((r) => r.reading?.source === "demo") && (
             <p className="mt-1.5 px-1 text-xs font-semibold tracking-wide text-warn uppercase">Simulation des pressions</p>
+          )}
+          {rows.some((r) => r.reading?.source === "live") && (
+            <p className="mt-1.5 px-1 text-xs font-semibold tracking-wide text-ok uppercase">Capteurs en direct</p>
           )}
         </header>
 
@@ -320,7 +352,7 @@ export function PneuApp() {
                 known={state.knownSensors}
                 btError={btError}
                 scanning={scanning}
-                canSweep={bluetoothAvailable()}
+                canSweep={canSweepBluetooth()}
                 onPick={() => void pickAndAssign()}
                 onSweep={() => void sweep()}
                 onAssign={onAssign}
@@ -527,6 +559,11 @@ function AssignPanel(props: {
         </button>
       </div>
       {props.btError && <p className="mt-2 text-sm font-semibold text-alert">{props.btError}</p>}
+      {!props.canSweep && (
+        <p className="mt-2 text-sm text-muted">
+          Le balayage automatique n'est pas offert dans ce navigateur. Dans l'application Android, ou dans Chrome sur un téléphone, tu pourras chercher les capteurs. Tu peux aussi saisir ou choisir un identifiant ci-dessous.
+        </p>
+      )}
 
       <p className="mt-4 text-xs font-semibold tracking-[0.14em] text-muted uppercase">Roue en cours · {meta.short}</p>
       <ul className="mt-2 flex flex-col gap-1.5">

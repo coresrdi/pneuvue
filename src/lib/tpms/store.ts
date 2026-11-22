@@ -1,9 +1,11 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { findLive, normalizeSensorId } from "./decode";
 import {
   JEEP_WHEELS,
   PRESET_SENSORS,
   type Layout,
+  type LiveReading,
   type Season,
   type Vehicle,
   type WheelId,
@@ -21,6 +23,7 @@ interface TpmsState {
   demo: boolean;
   hintDismissed: boolean;
   leakWheel: WheelId | null;
+  liveReadings: Record<string, LiveReading>;
   setSeason: (season: Season) => void;
   setActive: (id: string) => void;
   assign: (wheel: WheelId, sensorId: string | null) => void;
@@ -34,6 +37,7 @@ interface TpmsState {
   setDemo: (demo: boolean) => void;
   dismissHint: () => void;
   setLeakWheel: (wheel: WheelId | null) => void;
+  upsertLive: (ids: string[], reading: LiveReading) => void;
 }
 
 const DEFAULT_ID = "jeep-gc";
@@ -74,7 +78,7 @@ function emptySeasons(): Record<Season, SeasonMap> {
 }
 
 function normalize(id: string) {
-  return id.trim().toUpperCase().replace(/\s+/g, "");
+  return normalizeSensorId(id);
 }
 
 export const useTpms = create<TpmsState>()(
@@ -91,6 +95,7 @@ export const useTpms = create<TpmsState>()(
       demo: true,
       hintDismissed: false,
       leakWheel: null,
+      liveReadings: {},
       setSeason: (season) => set({ season }),
       setActive: (id) => set({ activeId: id, leakWheel: null }),
       assign: (wheel, sensorId) => {
@@ -136,7 +141,6 @@ export const useTpms = create<TpmsState>()(
           vehicles: [...s.vehicles, vehicle],
           assignments: { ...s.assignments, [id]: emptySeasons() },
           activeId: id,
-          season: layout === "suv5" ? "winter" : "summer",
           leakWheel: null,
         }));
       },
@@ -188,6 +192,17 @@ export const useTpms = create<TpmsState>()(
       setDemo: (demo) => set({ demo, leakWheel: demo ? get().leakWheel : null }),
       dismissHint: () => set({ hintDismissed: true }),
       setLeakWheel: (wheel) => set({ leakWheel: wheel }),
+      upsertLive: (ids, reading) => {
+        if (!ids.length) return;
+        set((s) => {
+          const liveReadings = { ...s.liveReadings };
+          for (const raw of ids) {
+            const id = normalize(raw);
+            if (id) liveReadings[id] = reading;
+          }
+          return { liveReadings };
+        });
+      },
     }),
     {
       name: "pneuvue",
@@ -208,4 +223,9 @@ export const useTpms = create<TpmsState>()(
 
 export function activeVehicle(s: TpmsState): Vehicle {
   return s.vehicles.find((v) => v.id === s.activeId) ?? s.vehicles[0];
+}
+
+export function liveForSensor(readings: Record<string, LiveReading>, sensorId: string | undefined) {
+  if (!sensorId) return undefined;
+  return findLive(readings, sensorId);
 }

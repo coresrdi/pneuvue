@@ -1,0 +1,41 @@
+# Dépendances et builds
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+.tanstack/
+.output/
+.nitro/
+.wrangler/
+
+# Tests et caches
+test-results/
+playwright-report/
+coverage/
+*.tsbuildinfo
+
+# OS / éditeurs
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Android local (les sources android/ sont versionnées)
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
+android/captures/
+android/*.apk
+android/*.aab
+android/app/release/
+android/keystore.properties
+*.jks
+*.keystore
+
+# Secrets (jamais dans le dépôt)
+.env
+.env.*
+!.env.example

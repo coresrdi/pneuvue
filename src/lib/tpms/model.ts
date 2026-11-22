@@ -79,7 +79,7 @@ export const PRESET_SENSORS = [
 
 const PRESET_BASE: Record<string, { psi: number; temp: number; bat: number }> = {
   C4A1: { psi: 39.2, temp: 6.0, bat: 86 },
-  C4A2: { psi: 62.5, temp: 9.0, bat: 74 },
+  C4A2: { psi: 38.5, temp: 9.0, bat: 74 },
   C4A3: { psi: 36.4, temp: 7.5, bat: 91 },
   C4A4: { psi: 35.8, temp: 8.0, bat: 88 },
   C4A5: { psi: 40.1, temp: 5.5, bat: 80 },
